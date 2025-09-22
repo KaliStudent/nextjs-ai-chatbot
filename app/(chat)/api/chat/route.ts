@@ -1,99 +1,108 @@
-"use client";
+import { NextResponse } from "next/server";
+import { OpenAIStream, StreamingTextResponse } from "ai";
+import OpenAI from "openai";
+import { auth } from "@/app/(auth)/auth";
+import { getMessageCountByUserId, saveMessages, getChatById } from "@/lib/db/queries";
+import { postRequestBodySchema, type PostRequestBody } from "./schema";
 
-import { useChat } from "ai/react";
-import { useEffect, useRef, useState } from "react";
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY!,
+});
 
-// Dark/light toggle
-function ThemeToggle() {
-  const [dark, setDark] = useState(false);
-  useEffect(() => {
-    if (localStorage.theme === "dark" || (!("theme" in localStorage) && window.matchMedia("(prefers-color-scheme: dark)").matches)) {
-      document.documentElement.classList.add("dark");
-      setDark(true);
-    }
-  }, []);
+export async function POST(req: Request) {
+  let requestBody: PostRequestBody;
 
-  const toggle = () => {
-    if (dark) {
-      document.documentElement.classList.remove("dark");
-      localStorage.theme = "light";
-      setDark(false);
-    } else {
-      document.documentElement.classList.add("dark");
-      localStorage.theme = "dark";
-      setDark(true);
-    }
+  try {
+    const json = await req.json();
+    requestBody = postRequestBodySchema.parse(json);
+  } catch (_) {
+    return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+  }
+
+  const { id, message } = requestBody;
+
+  const session = await auth();
+  if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const messageCount = await getMessageCountByUserId({ id: session.user.id, differenceInHours: 24 });
+  if (messageCount > 1000) return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
+
+  await saveMessages({
+    messages: [
+      {
+        chatId: id,
+        id: message.id,
+        role: "user",
+        parts: message.parts,
+        attachments: [],
+        createdAt: new Date(),
+      },
+    ],
+  });
+
+  const userText = message.parts[0]?.content?.toLowerCase() || "";
+
+  // --- Rule-based overrides ---
+  if (userText.includes("resume")) {
+    return NextResponse.json({
+      id: "custom-resume-answer",
+      role: "assistant",
+      parts: [
+        {
+          content:
+            "Brian Jarvis' resume summary:\n- Digital forensics, IT security, software development\n- Web design, coding, UI/UX, business development\n- Contact: hireme@bjarvis.io\n- LinkedIn: https://www.linkedin.com/in/brian-jarvis-in-itsec/",
+        },
+      ],
+    });
+  }
+
+  if (userText.includes("contact") || userText.includes("email")) {
+    return NextResponse.json({
+      id: "custom-contact-answer",
+      role: "assistant",
+      parts: [
+        {
+          content:
+            "You can reach Brian Jarvis via email: hireme@bjarvis.io or LinkedIn: https://www.linkedin.com/in/brian-jarvis-in-itsec/",
+        },
+      ],
+    });
+  }
+
+  const chat = await getChatById({ id });
+  if (!chat) return NextResponse.json({ error: "Chat not found" }, { status: 404 });
+
+  // --- System prompt injection ---
+  const systemMessage = {
+    role: "system",
+    content: `
+You are a helpful assistant that knows Brian Jarvis' professional background:
+- Name: Brian Jarvis
+- Location: Dallas, TX
+- Background: Digital forensics, IT security, software development
+- Skills: Web design, coding, UI/UX, business development
+- Contact: hireme@bjarvis.io
+- LinkedIn: https://www.linkedin.com/in/brian-jarvis-in-itsec/
+
+Instructions:
+- If asked about Brian’s resume, summarize above info.
+- If asked for contact, only provide email or LinkedIn.
+- Otherwise behave as a normal assistant.
+`,
   };
 
-  return (
-    <button onClick={toggle} className="px-3 py-1 rounded border text-sm dark:border-gray-700">
-      {dark ? "🌙 Dark" : "☀️ Light"}
-    </button>
-  );
-}
+  const messagesForAI = [
+    systemMessage,
+    ...message.parts.map((part) => ({ role: "user", content: part.content })),
+  ];
 
-// Typing indicator
-function TypingIndicator() {
-  return (
-    <div className="flex justify-start">
-      <div className="max-w-xs px-4 py-2 rounded-lg shadow text-sm bg-gray-200 dark:bg-gray-600 text-gray-900 dark:text-gray-100 rounded-bl-none">
-        <span className="flex items-center gap-1">
-          <span className="animate-bounce">●</span>
-          <span className="animate-bounce delay-150">●</span>
-          <span className="animate-bounce delay-300">●</span>
-        </span>
-      </div>
-    </div>
-  );
-}
+  // --- OpenAI streaming ---
+  const response = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    stream: true,
+    messages: messagesForAI,
+  });
 
-export default function ChatPage() {
-  const { messages, input, handleInputChange, handleSubmit, isLoading } = useChat({ api: "/api/chat" });
-  const bottomRef = useRef<HTMLDivElement | null>(null);
-
-  // Scroll to bottom on new messages or typing
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isLoading]);
-
-  return (
-    <main className="flex flex-col items-center justify-center min-h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors">
-      <div className="w-full max-w-2xl border dark:border-gray-700 rounded-lg shadow bg-white dark:bg-gray-800 p-4 flex flex-col">
-        {/* Header */}
-        <div className="flex justify-between items-center mb-4">
-          <h1 className="text-xl font-bold">🤖 AI Chatbot</h1>
-          <ThemeToggle />
-        </div>
-
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto space-y-3 mb-4 p-2 bg-gray-50 dark:bg-gray-700 rounded">
-          {messages.length === 0 && <p className="text-gray-500 dark:text-gray-400 text-center mt-10">Start chatting with me!</p>}
-          {messages.map((m) => (
-            <div key={m.id} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div className={`max-w-xs px-4 py-2 rounded-lg shadow text-sm ${m.role === "user" ? "bg-blue-600 text-white rounded-br-none" : "bg-gray-200 dark:bg-gray-600 text-gray-900 dark:text-gray-100 rounded-bl-none"}`}>
-                {m.content}
-              </div>
-            </div>
-          ))}
-
-          {isLoading && <TypingIndicator />}
-
-          <div ref={bottomRef} />
-        </div>
-
-        {/* Input */}
-        <form onSubmit={handleSubmit} className="flex gap-2">
-          <input
-            className="flex-grow border dark:border-gray-600 rounded px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-            value={input}
-            placeholder="Type your message..."
-            onChange={handleInputChange}
-          />
-          <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
-            Send
-          </button>
-        </form>
-      </div>
-    </main>
-  );
+  const stream = OpenAIStream(response);
+  return new StreamingTextResponse(stream);
 }

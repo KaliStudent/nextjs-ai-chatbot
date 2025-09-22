@@ -13,6 +13,7 @@ export const myProvider = isTestEnvironment
         chatModel,
         reasoningModel,
         titleModel,
+        resumeModel,   // mock for testing
       } = require('./models.mock');
       return customProvider({
         languageModels: {
@@ -20,6 +21,7 @@ export const myProvider = isTestEnvironment
           'chat-model-reasoning': reasoningModel,
           'title-model': titleModel,
           'artifact-model': artifactModel,
+          'chat-model-resume': resumeModel,  // NEW
         },
       });
     })()
@@ -32,5 +34,6 @@ export const myProvider = isTestEnvironment
         }),
         'title-model': gateway.languageModel('xai/grok-2-1212'),
         'artifact-model': gateway.languageModel('xai/grok-2-1212'),
+        'chat-model-resume': gateway.languageModel('xai/grok-2-1212'),  // NEW
       },
     });

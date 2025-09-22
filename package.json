@@ -132,5 +132,9 @@
     "tsx": "^4.19.1",
     "typescript": "^5.6.3"
   },
+  "engines": {
+  "node": "20.x",
+  "pnpm": "8.x"
+},
   "packageManager": "pnpm@9.12.3"
 }
